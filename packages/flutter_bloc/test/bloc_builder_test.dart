@@ -1,4 +1,6 @@
 // ignore_for_file: prefer_file_naming_conventions
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -136,6 +138,20 @@ class CounterCubit extends Cubit<int> {
   void increment() => emit(state + 1);
 }
 
+class EqualCounterCubit extends Cubit<int> {
+  EqualCounterCubit({int seed = 0}) : super(seed);
+
+  void increment() => emit(state + 1);
+
+  @override
+  // 故意让不同实例在 `==` 判断时也算相等，
+  // 用来验证 bloc 切换应该基于实例身份，而不是基于 `==`。
+  bool operator ==(Object other) => other is EqualCounterCubit;
+
+  @override
+  int get hashCode => runtimeType.hashCode;
+}
+
 void main() {
   group('BlocBuilder', () {
     testWidgets('passes initial state to widget', (tester) async {
@@ -243,6 +259,7 @@ void main() {
       );
 
       await tester.tap(find.byType(ElevatedButton));
+      
       await tester.pumpAndSettle();
 
       final materialApp = tester.widget<MaterialApp>(
@@ -520,6 +537,178 @@ void main() {
       expect(find.text('Count 101'), findsOneWidget);
     });
 
+    testWidgets(
+        'switches explicit bloc instances even when the blocs are equal',
+        (tester) async {
+      // 创建两个不同的 bloc 实例。
+      // 第二个实例从 100 开始，方便观察 BlocBuilder 是否真的切换过去了。
+      final firstCounterCubit = EqualCounterCubit();
+      final secondCounterCubit = EqualCounterCubit(seed: 100);
+
+      // 当前通过 `bloc:` 参数传给 BlocBuilder 的实例。
+      // 后面会修改这个变量，模拟 bloc 切换。
+      var currentCubit = firstCounterCubit;
+
+      // 用 StatefulBuilder 拿到一个局部 setState，
+      // 这样测试里就可以主动重建 widget，并切换到另一个 bloc 实例。
+      late StateSetter setState;
+
+      await tester.pumpWidget(
+        Directionality(
+          textDirection: TextDirection.ltr,
+          child: StatefulBuilder(
+            builder: (context, localSetState) {
+              setState = localSetState;
+              return BlocBuilder<EqualCounterCubit, int>(
+                // 显式把当前要测试的 bloc 传给 BlocBuilder。
+                bloc: currentCubit,
+                builder: (context, state) => Text('Count $state'),
+              );
+            },
+          ),
+        ),
+      );
+
+      // 初次渲染时，页面应该显示第一个 bloc 的初始 state。
+      expect(find.text('Count 0'), findsOneWidget);
+
+      // 让第一个 bloc 发出新状态，确认 UI 会跟着它刷新。
+      firstCounterCubit.increment();
+      await tester.pumpAndSettle();
+      expect(find.text('Count 1'), findsOneWidget);
+
+      // 重建 BlocBuilder，并把 bloc 切换成第二个实例。
+      setState(() => currentCubit = secondCounterCubit);
+      await tester.pumpAndSettle();
+
+      // 切换后，UI 应该立刻显示第二个 bloc 当前的 state，
+      // 而不是继续停留在旧 bloc 的 state。
+      expect(find.text('Count 100'), findsOneWidget);
+      expect(find.text('Count 1'), findsNothing);
+
+      // 切换完成后，再让旧 bloc 发状态。
+      // 如果 BlocBuilder 还错误地订阅着旧 bloc，页面就会变成 Count 2。
+      firstCounterCubit.increment();
+      await tester.pumpAndSettle();
+      expect(find.text('Count 100'), findsOneWidget);
+      expect(find.text('Count 2'), findsNothing);
+
+      // 再让新 bloc 发状态，确认新的订阅已经生效。
+      secondCounterCubit.increment();
+      await tester.pumpAndSettle();
+      expect(find.text('Count 101'), findsOneWidget);
+
+      // 关闭测试里创建的 bloc，避免资源泄漏。
+      await firstCounterCubit.close();
+      await secondCounterCubit.close();
+    });
+
+    testWidgets(
+        'does not rebuild from the old bloc after context lookup switches '
+        'to another instance', (tester) async {
+      // 和上面的切换场景类似，
+      // 但这次 BlocBuilder 不是通过 `bloc:` 参数拿 bloc，
+      // 而是通过 BlocProvider 从 context 中查找。
+      final firstCounterCubit = CounterCubit();
+      final secondCounterCubit = CounterCubit(seed: 100);
+      var currentCubit = firstCounterCubit;
+      late StateSetter setState;
+
+      await tester.pumpWidget(
+        Directionality(
+          textDirection: TextDirection.ltr,
+          child: StatefulBuilder(
+            builder: (context, localSetState) {
+              setState = localSetState;
+              return BlocProvider.value(
+                // 通过重建 BlocProvider，切换它向下提供的 bloc 实例。
+                value: currentCubit,
+                child: BlocBuilder<CounterCubit, int>(
+                  builder: (context, state) => Text('Count $state'),
+                ),
+              );
+            },
+          ),
+        ),
+      );
+
+      // 初次渲染应来自第一个 provider 提供的 bloc。
+      expect(find.text('Count 0'), findsOneWidget);
+
+      // 先验证第一个 bloc 的状态变化可以正常驱动 UI。
+      firstCounterCubit.increment();
+      await tester.pumpAndSettle();
+      expect(find.text('Count 1'), findsOneWidget);
+
+      // 重建 provider，并切换成第二个 bloc。
+      setState(() => currentCubit = secondCounterCubit);
+      await tester.pumpAndSettle();
+
+      // 此时 BlocBuilder 应该已经读取到第二个 bloc 的当前 state。
+      expect(find.text('Count 100'), findsOneWidget);
+      expect(find.text('Count 1'), findsNothing);
+
+      // 旧 bloc 此时不应该再有能力刷新 UI。
+      firstCounterCubit.increment();
+      await tester.pumpAndSettle();
+      expect(find.text('Count 100'), findsOneWidget);
+      expect(find.text('Count 2'), findsNothing);
+
+      // 新 bloc 仍然应该可以正常驱动 UI 刷新。
+      secondCounterCubit.increment();
+      await tester.pumpAndSettle();
+      expect(find.text('Count 101'), findsOneWidget);
+
+      await firstCounterCubit.close();
+      await secondCounterCubit.close();
+    });
+
+    testWidgets('rebuilds when bloc is changed via Stream', (tester) async {
+      final firstCounterCubit = CounterCubit();
+      final secondCounterCubit = CounterCubit(seed: 100);
+      final cubitStreamController = StreamController<CounterCubit>.broadcast()
+        ..add(firstCounterCubit);
+
+      await tester.pumpWidget(
+        Directionality(
+          textDirection: TextDirection.ltr,
+          child: StreamBuilder<CounterCubit>(
+            stream: cubitStreamController.stream,
+            initialData: firstCounterCubit,
+            builder: (context, snapshot) {
+              final currentCubit = snapshot.data!;
+              return BlocProvider.value(
+                value: currentCubit,
+                child: BlocBuilder<CounterCubit, int>(
+                  builder: (context, state) => Text('Count $state'),
+                ),
+              );
+            },
+          ),
+        ),
+      );
+
+      expect(find.text('Count 0'), findsOneWidget);
+
+      firstCounterCubit.increment();
+      await tester.pumpAndSettle();
+      expect(find.text('Count 1'), findsOneWidget);
+      expect(find.text('Count 0'), findsNothing);
+
+      cubitStreamController.add(secondCounterCubit);
+      await tester.pumpAndSettle();
+      expect(find.text('Count 100'), findsOneWidget);
+      expect(find.text('Count 1'), findsNothing);
+
+      secondCounterCubit.increment();
+      await tester.pumpAndSettle();
+      expect(find.text('Count 101'), findsOneWidget);
+
+      await cubitStreamController.close();
+      await firstCounterCubit.close();
+      await secondCounterCubit.close();
+    });
+
     testWidgets('overrides debugFillProperties', (tester) async {
       final builder = DiagnosticPropertiesBuilder();
 
@@ -543,5 +732,6 @@ void main() {
         ],
       );
     });
+    
   });
 }
