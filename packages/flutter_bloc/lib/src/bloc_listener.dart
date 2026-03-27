@@ -163,14 +163,18 @@ class _BlocListenerBaseState<B extends StateStreamable<S>, S>
   @override
   void didUpdateWidget(BlocListenerBase<B, S> oldWidget) {
     super.didUpdateWidget(oldWidget);
-    final oldBloc = oldWidget.bloc ?? context.read<B>();
-    final currentBloc = widget.bloc ?? oldBloc;
-    if (oldBloc != currentBloc) {
-      if (_subscription != null) {
-        _unsubscribe();
-        _bloc = currentBloc;
-        _previousState = _bloc.state;
-      }
+
+    // 1. oldBloc 优先使用内部维护的 _bloc，而不是每次都 context.read<B>()
+    // 2. 使用 identical() 进行更严格的实例比较
+    // 3. 逻辑更清晰：bloc 变化时总是先清理旧订阅，再建立新订阅
+
+    final oldBloc = oldWidget.bloc ?? _bloc;          
+    final newBloc = widget.bloc ?? context.read<B>();
+
+    if (!identical(oldBloc, newBloc)) {
+      _unsubscribe();
+      _bloc = newBloc;
+      _previousState = _bloc.state;
       _subscribe();
     }
   }
@@ -178,13 +182,13 @@ class _BlocListenerBaseState<B extends StateStreamable<S>, S>
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    final bloc = widget.bloc ?? context.read<B>();
-    if (_bloc != bloc) {
-      if (_subscription != null) {
-        _unsubscribe();
-        _bloc = bloc;
-        _previousState = _bloc.state;
-      }
+
+    final newBloc = widget.bloc ?? context.read<B>();
+
+    if (!identical(_bloc, newBloc)) {
+      _unsubscribe();
+      _bloc = newBloc;
+      _previousState = _bloc.state;
       _subscribe();
     }
   }
