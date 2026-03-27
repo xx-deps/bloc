@@ -166,7 +166,7 @@ class _BlocListenerBaseState<B extends StateStreamable<S>, S>
 
     // 1. oldBloc 优先使用内部维护的 _bloc，而不是每次都 context.read<B>()
     // 2. 使用 identical() 进行更严格的实例比较
-    // 3. 逻辑更清晰：bloc 变化时总是先清理旧订阅，再建立新订阅
+    // 3. bloc 变化时总是先清理旧订阅，再建立新订阅
 
     final oldBloc = oldWidget.bloc ?? _bloc;          
     final newBloc = widget.bloc ?? context.read<B>();

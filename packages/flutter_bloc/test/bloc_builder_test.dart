@@ -144,7 +144,6 @@ class EqualCounterCubit extends Cubit<int> {
   void increment() => emit(state + 1);
 
   @override
-  // 故意让不同实例在 `==` 判断时也算相等，
   // 用来验证 bloc 切换应该基于实例身份，而不是基于 `==`。
   bool operator ==(Object other) => other is EqualCounterCubit;
 
@@ -709,6 +708,205 @@ void main() {
       await secondCounterCubit.close();
     });
 
+    testWidgets(
+        'BlocBuilder updates correctly when bloc instance changes - tests BlocListener didUpdateWidget',
+        (tester) async {
+      final firstCubit = CounterCubit();
+      final secondCubit = CounterCubit(seed: 100);
+      var currentCubit = firstCubit;
+      late StateSetter setState;
+
+      int buildCount = 0;
+
+      await tester.pumpWidget(
+        Directionality(
+          textDirection: TextDirection.ltr,
+          child: StatefulBuilder(
+            builder: (context, localSetState) {
+              setState = localSetState;
+              return BlocBuilder<CounterCubit, int>(
+                bloc: currentCubit,
+                builder: (context, state) {
+                  buildCount++;
+                  return Text('Count $state');
+                },
+              );
+            },
+          ),
+        ),
+      );
+
+      expect(find.text('Count 0'), findsOneWidget);
+      expect(buildCount, 1);
+
+      // 第一个 cubit 发送状态
+      firstCubit.increment();
+      await tester.pumpAndSettle();
+      expect(find.text('Count 1'), findsOneWidget);
+      expect(buildCount, 2);
+
+      // 切换到第二个 cubit 实例（这是关键测试点）
+      setState(() => currentCubit = secondCubit);
+      await tester.pumpAndSettle();
+
+      // 关键断言：应该显示新实例的 state，而不是旧的
+      expect(find.text('Count 100'), findsOneWidget);
+      expect(find.text('Count 1'), findsNothing);
+      expect(buildCount, 3,
+          reason: '切换 bloc 实例后应该触发重建');
+
+      // 验证旧 cubit 不再能影响 UI
+      firstCubit.increment();
+      await tester.pumpAndSettle();
+      expect(find.text('Count 100'), findsOneWidget);
+      expect(find.text('Count 2'), findsNothing);
+
+      // 新 cubit 应该正常驱动更新
+      secondCubit.increment();
+      await tester.pumpAndSettle();
+      expect(find.text('Count 101'), findsOneWidget);
+
+      await firstCubit.close();
+      await secondCubit.close();
+    });
+
+    testWidgets(
+        'BlocBuilder fails to update when switching bloc instances via BlocProvider '
+        '(tests BlocListener didUpdateWidget bug)',
+        (tester) async {
+      final firstCubit = CounterCubit();
+      final secondCubit = CounterCubit(seed: 100);
+      var currentCubit = firstCubit;
+      late StateSetter setState;
+
+      int buildCount = 0;
+
+      await tester.pumpWidget(
+        Directionality(
+          textDirection: TextDirection.ltr,
+          child: StatefulBuilder(
+            builder: (context, localSetState) {
+              setState = localSetState;
+              return BlocProvider.value(
+                value: currentCubit,
+                child: BlocBuilder<CounterCubit, int>(
+                  // 故意不传 bloc 参数，让它通过 context 查找
+                  builder: (context, state) {
+                    buildCount++;
+                    return Text('Count $state (builds: $buildCount)');
+                  },
+                ),
+              );
+            },
+          ),
+        ),
+      );
+
+      // 初始状态
+      expect(find.textContaining('Count 0'), findsOneWidget);
+      expect(buildCount, 1);
+
+      // 第一个 cubit 发状态
+      firstCubit.increment();
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Count 1 (builds: 2)'), findsOneWidget);
+      expect(buildCount, 2);
+
+      // === 关键测试：切换 bloc 实例 ===
+      setState(() => currentCubit = secondCubit);
+      await tester.pumpAndSettle();
+
+      // 关键断言：应该显示第二个 cubit 的状态 (100)
+      expect(find.textContaining('Count 100 (builds: 3)'), findsOneWidget,
+          reason: '切换 bloc 后应该显示新实例的状态');
+      expect(find.textContaining('Count 1 (builds: 2)'), findsNothing,
+          reason: '不应该还能看到旧状态');
+      expect(buildCount, greaterThan(2),
+          reason: '切换 bloc 实例后 builder 应该被重新调用');
+
+      // 验证旧 cubit 不再影响 UI
+      firstCubit.increment();
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Count 100'), findsOneWidget);
+      expect(find.textContaining('Count 2'), findsNothing,
+          reason: '旧 cubit 不应该再触发 UI 更新');
+
+      // 新 cubit 应该正常工作
+      secondCubit.increment();
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Count 101'), findsOneWidget);
+
+      await firstCubit.close();
+      await secondCubit.close();
+    });
+
+    testWidgets(
+        'rebuilds correctly when bloc instance is switched via StreamBuilder',
+        (tester) async {
+      final firstCubit = CounterCubit();
+      final secondCubit = CounterCubit(seed: 100);
+      final streamController = StreamController<CounterCubit>.broadcast()
+        ..add(firstCubit);
+
+      int buildCount = 0;
+
+      await tester.pumpWidget(
+        Directionality(
+          textDirection: TextDirection.ltr,
+          child: StreamBuilder<CounterCubit>(
+            stream: streamController.stream,
+            initialData: firstCubit,
+            builder: (context, snapshot) {
+              final currentCubit = snapshot.data!;
+              return BlocProvider.value(
+                value: currentCubit,
+                child: BlocBuilder<CounterCubit, int>(
+                  builder: (context, state) {
+                    buildCount++;
+                    return Text('Count $state (builds: $buildCount)');
+                  },
+                ),
+              );
+            },
+          ),
+        ),
+      );
+
+      expect(find.textContaining('Count 0'), findsOneWidget);
+      expect(buildCount, 1);
+
+      // 第一个 cubit 发送状态
+      firstCubit.increment();
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Count 1 (builds: 2)'), findsOneWidget);
+      expect(buildCount, 2);
+
+      // 通过 Stream 切换到第二个 cubit
+      streamController.add(secondCubit);
+      await tester.pumpAndSettle();
+
+      // 应该显示第二个 cubit 的初始状态
+      expect(find.textContaining('Count 100 (builds: 3)'), findsOneWidget);
+      expect(find.textContaining('Count 1 (builds: 2)'), findsNothing,
+          reason: '切换后不应该再看到旧状态');
+      expect(buildCount, greaterThan(2),
+          reason: '通过 StreamBuilder 切换 bloc 后应该触发重建');
+
+      // 验证旧 cubit 不再影响 UI
+      firstCubit.increment();
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Count 100'), findsOneWidget);
+
+      // 新 cubit 应该正常工作
+      secondCubit.increment();
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Count 101'), findsOneWidget);
+
+      await streamController.close();
+      await firstCubit.close();
+      await secondCubit.close();
+    });
+
     testWidgets('overrides debugFillProperties', (tester) async {
       final builder = DiagnosticPropertiesBuilder();
 
@@ -731,6 +929,61 @@ void main() {
           'has builder',
         ],
       );
+    });
+
+    testWidgets(
+        'uses improved didUpdateWidget logic when switching bloc instances',
+        (tester) async {
+      final firstCubit = CounterCubit();
+      final secondCubit = CounterCubit(seed: 100);
+      var currentCubit = firstCubit;
+      late StateSetter setState;
+      int buildCount = 0;
+
+      await tester.pumpWidget(
+        Directionality(
+          textDirection: TextDirection.ltr,
+          child: StatefulBuilder(
+            builder: (context, localSetState) {
+              setState = localSetState;
+              return BlocProvider.value(
+                value: currentCubit,
+                child: BlocBuilder<CounterCubit, int>(
+                  builder: (context, state) {
+                    buildCount++;
+                    return Text('Count $state (builds: $buildCount)');
+                  },
+                ),
+              );
+            },
+          ),
+        ),
+      );
+
+      expect(buildCount, 1);
+      expect(find.textContaining('Count 0'), findsOneWidget);
+
+      // 让第一个 cubit 发出状态
+      firstCubit.increment();
+      await tester.pumpAndSettle();
+      expect(buildCount, 2);
+
+      // 切换到第二个 cubit 实例 —— 这会触发改进后的 didUpdateWidget
+      setState(() => currentCubit = secondCubit);
+      await tester.pumpAndSettle();
+
+      // 验证改进后的逻辑是否生效
+      expect(find.textContaining('Count 100'), findsOneWidget);
+      expect(buildCount, greaterThan(2),
+          reason: '改进后的 didUpdateWidget 应该正确触发重建');
+
+      // 验证旧 cubit 不再影响 UI
+      firstCubit.increment();
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Count 100'), findsOneWidget);
+
+      await firstCubit.close();
+      await secondCubit.close();
     });
     
   });
