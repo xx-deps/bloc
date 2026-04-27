@@ -179,7 +179,7 @@ class _BlocBuilderBaseState<B extends StateStreamable<S>, S>
     if (widget.bloc == null) {
       // Trigger a rebuild if the bloc reference has changed.
       // See https://github.com/felangel/bloc/issues/2127.
-      context.select<B, bool>((bloc) => identical(_bloc, bloc));
+      context.select<B, ObjectKey>((bloc) => ObjectKey(bloc));
     }
     return BlocListener<B, S>(
       bloc: _bloc,

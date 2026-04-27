@@ -136,6 +136,17 @@ class CounterCubit extends Cubit<int> {
   void increment() => emit(state + 1);
 }
 
+class _CounterText extends StatelessWidget {
+  const _CounterText();
+
+  @override
+  Widget build(BuildContext context) {
+    return BlocBuilder<CounterCubit, int>(
+      builder: (context, state) => Text('Count $state'),
+    );
+  }
+}
+
 void main() {
   group('BlocBuilder', () {
     testWidgets('passes initial state to widget', (tester) async {
@@ -518,6 +529,73 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('Count 101'), findsOneWidget);
+    });
+
+    testWidgets('rebuilds when provided bloc changes multiple times',
+        (tester) async {
+      final firstCounterCubit = CounterCubit();
+      final secondCounterCubit = CounterCubit(seed: 100);
+      final thirdCounterCubit = CounterCubit(seed: 200);
+      var currentCounterCubit = firstCounterCubit;
+
+      await tester.pumpWidget(
+        Directionality(
+          textDirection: TextDirection.ltr,
+          child: StatefulBuilder(
+            builder: (context, setState) {
+              return BlocProvider.value(
+                value: currentCounterCubit,
+                child: Column(
+                  children: [
+                    const _CounterText(),
+                    ElevatedButton(
+                      child: const SizedBox(),
+                      onPressed: () {
+                        setState(() {
+                          currentCounterCubit = secondCounterCubit;
+                        });
+                      },
+                    ),
+                    TextButton(
+                      child: const SizedBox(),
+                      onPressed: () {
+                        setState(() {
+                          currentCounterCubit = thirdCounterCubit;
+                        });
+                      },
+                    ),
+                    OutlinedButton(
+                      child: const SizedBox(),
+                      onPressed: () {
+                        setState(() {
+                          currentCounterCubit = firstCounterCubit;
+                        });
+                      },
+                    ),
+                  ],
+                ),
+              );
+            },
+          ),
+        ),
+      );
+
+      expect(find.text('Count 0'), findsOneWidget);
+
+      await tester.tap(find.byType(ElevatedButton));
+      await tester.pumpAndSettle();
+      expect(find.text('Count 100'), findsOneWidget);
+      expect(find.text('Count 0'), findsNothing);
+
+      await tester.tap(find.byType(TextButton));
+      await tester.pumpAndSettle();
+      expect(find.text('Count 200'), findsOneWidget);
+      expect(find.text('Count 100'), findsNothing);
+
+      await tester.tap(find.byType(OutlinedButton));
+      await tester.pumpAndSettle();
+      expect(find.text('Count 0'), findsOneWidget);
+      expect(find.text('Count 200'), findsNothing);
     });
 
     testWidgets('overrides debugFillProperties', (tester) async {
